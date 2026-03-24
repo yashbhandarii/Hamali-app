@@ -1,6 +1,6 @@
 "use client"
 
-import { useState, useCallback } from "react"
+import { useState, useCallback, useEffect } from "react"
 import { CategoryManager } from "@/components/category-manager"
 import { DailyCalculator } from "@/components/daily-calculator"
 import { HistoryViewer } from "@/components/history-viewer"
@@ -8,13 +8,31 @@ import { SettingsPanel } from "@/components/settings-panel"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { Calculator, History, Settings, FileText } from "lucide-react"
 import type { Category } from "@/types/labor"
+import { syncFromSupabase, getCategories } from "@/lib/storage"
 
 export default function LaborCalculatorApp() {
   const [categories, setCategories] = useState<Category[]>([])
   const [activeTab, setActiveTab] = useState("calculator")
+  const [syncing, setSyncing] = useState(true)
 
   const handleCategoriesChange = useCallback((newCategories: Category[]) => {
     setCategories(newCategories)
+  }, [])
+
+  useEffect(() => {
+    // On app load: try syncing from Supabase, then fall back to local
+    syncFromSupabase()
+      .then(({ categories: remoteCats }) => {
+        if (remoteCats && remoteCats.length > 0) {
+          setCategories(remoteCats)
+        } else {
+          setCategories(getCategories())
+        }
+      })
+      .catch(() => {
+        setCategories(getCategories())
+      })
+      .finally(() => setSyncing(false))
   }, [])
 
   return (
@@ -26,6 +44,9 @@ export default function LaborCalculatorApp() {
             <p className="text-sm sm:text-base text-muted-foreground">
               Calculate daily labor charges per bag with ease
             </p>
+            {syncing && (
+              <p className="text-xs text-muted-foreground mt-1 animate-pulse">Syncing data...</p>
+            )}
           </div>
 
           <Tabs value={activeTab} onValueChange={setActiveTab} className="w-full">

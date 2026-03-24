@@ -141,6 +141,7 @@ export const generatePDF = async (record: DailyRecord): Promise<void> => {
             <th class="center">Bags</th>
             <th class="center">Rate per Bag</th>
             <th class="right">Total Charge</th>
+            <th>Comment</th>
           </tr>
         </thead>
         <tbody>
@@ -150,15 +151,17 @@ export const generatePDF = async (record: DailyRecord): Promise<void> => {
             <tr>
               <td>${category.categoryName}</td>
               <td class="center">${category.bags}</td>
-              <td class="center">$${category.chargePerBag.toFixed(2)}</td>
-              <td class="right">$${category.totalCharge.toFixed(2)}</td>
+              <td class="center">₹${category.chargePerBag.toFixed(2)}</td>
+              <td class="right">₹${category.totalCharge.toFixed(2)}</td>
+              <td>${(category as any).comment || ""}</td>
             </tr>
           `,
             )
             .join("")}
           <tr class="total-row">
             <td colspan="3" class="right">GRAND TOTAL:</td>
-            <td class="right">$${record.grandTotal.toFixed(2)}</td>
+            <td class="right">₹${record.grandTotal.toFixed(2)}</td>
+            <td></td>
           </tr>
         </tbody>
       </table>

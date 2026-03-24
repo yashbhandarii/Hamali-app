@@ -14,12 +14,15 @@ export interface DailyRecord {
     bags: number
     chargePerBag: number
     totalCharge: number
+    comment?: string
   }[]
   grandTotal: number
   createdAt: string
 }
 
 export interface CalculationEntry {
+  entryId: string
   categoryId: string
   bags: number
+  comment: string
 }
