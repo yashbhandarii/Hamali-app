@@ -8,7 +8,7 @@ import { SettingsPanel } from "@/components/settings-panel"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { Calculator, History, Settings, FileText } from "lucide-react"
 import type { Category } from "@/types/labor"
-import { syncFromSupabase, getCategories } from "@/lib/storage"
+import { syncFromSupabase, getCategories, registerOnlineListener } from "@/lib/storage"
 
 export default function LaborCalculatorApp() {
   const [categories, setCategories] = useState<Category[]>([])
@@ -20,6 +20,9 @@ export default function LaborCalculatorApp() {
   }, [])
 
   useEffect(() => {
+    // Register listener to auto-flush pending sync when device comes back online
+    registerOnlineListener()
+
     // On app load: try syncing from Supabase, then fall back to local
     syncFromSupabase()
       .then(({ categories: remoteCats }) => {

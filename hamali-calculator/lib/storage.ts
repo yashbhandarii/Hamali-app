@@ -3,6 +3,7 @@ import { supabase } from "@/lib/supabase"
 
 const CATEGORIES_KEY = "labor-categories"
 const RECORDS_KEY = "labor-records"
+const PENDING_SYNC_KEY = "hamali-pending-sync"
 
 export const DEFAULT_CATEGORIES: Category[] = [
   { id: "def-1", name: "शेतकरी भुसार आवक", chargePerBag: 11.88, isDefault: true },
@@ -21,6 +22,56 @@ export const DEFAULT_CATEGORIES: Category[] = [
   { id: "def-14", name: "पाला फोडणे, तोडणे, काटा करणे व थप्पी लावणे.", chargePerBag: 12.14, isDefault: true },
   { id: "def-15", name: "मोठी गोणी", chargePerBag: 10, isDefault: true },
 ]
+
+// ─── Pending Sync Queue ───
+
+interface PendingSyncOp {
+  type: "upsert-record" | "delete-record" | "sync-categories"
+  payload: any
+  timestamp: number
+}
+
+function getPendingOps(): PendingSyncOp[] {
+  if (typeof window === "undefined") return []
+  try {
+    const stored = localStorage.getItem(PENDING_SYNC_KEY)
+    return stored ? JSON.parse(stored) : []
+  } catch {
+    return []
+  }
+}
+
+function savePendingOps(ops: PendingSyncOp[]): void {
+  if (typeof window === "undefined") return
+  localStorage.setItem(PENDING_SYNC_KEY, JSON.stringify(ops))
+}
+
+function addPendingOp(op: PendingSyncOp): void {
+  const ops = getPendingOps()
+
+  // Deduplicate: if same type + same id already pending, replace it
+  const idx = ops.findIndex((o) => {
+    if (op.type === "sync-categories" && o.type === "sync-categories") return true
+    if (op.type === "upsert-record" && o.type === "upsert-record" && o.payload?.id === op.payload?.id) return true
+    if (op.type === "delete-record" && o.type === "delete-record" && o.payload?.id === op.payload?.id) return true
+    // If we're deleting a record that was pending upsert, remove the upsert
+    if (op.type === "delete-record" && o.type === "upsert-record" && o.payload?.id === op.payload?.id) return true
+    return false
+  })
+
+  if (idx !== -1) {
+    ops[idx] = op
+  } else {
+    ops.push(op)
+  }
+
+  savePendingOps(ops)
+}
+
+function isOnline(): boolean {
+  if (typeof navigator === "undefined") return true
+  return navigator.onLine
+}
 
 // ─── Categories ───
 
@@ -73,11 +124,18 @@ export const updateRecord = (updatedRecord: DailyRecord): void => {
 // ─── Supabase Sync Helpers ───
 
 async function syncCategoriesToSupabase(categories: Category[]) {
+  // If offline, queue and return
+  if (!isOnline()) {
+    addPendingOp({ type: "sync-categories", payload: categories, timestamp: Date.now() })
+    console.log("Offline: categories sync queued for later")
+    return
+  }
+
   try {
     // Delete all existing and re-insert
     await supabase.from("hamali_categories").delete().neq("id", "")
     if (categories.length > 0) {
-      await supabase.from("hamali_categories").insert(
+      const { error } = await supabase.from("hamali_categories").insert(
         categories.map((c) => ({
           id: c.id,
           name: c.name,
@@ -85,32 +143,145 @@ async function syncCategoriesToSupabase(categories: Category[]) {
           is_default: c.isDefault,
         }))
       )
+      if (error) throw error
     }
   } catch (e) {
-    console.warn("Supabase category sync failed:", e)
+    console.warn("Supabase category sync failed, queuing for retry:", e)
+    addPendingOp({ type: "sync-categories", payload: categories, timestamp: Date.now() })
   }
 }
 
 async function syncRecordToSupabase(record: DailyRecord) {
+  // If offline, queue and return
+  if (!isOnline()) {
+    addPendingOp({
+      type: "upsert-record",
+      payload: { id: record.id, date: record.date, categories: record.categories, grandTotal: record.grandTotal, createdAt: record.createdAt },
+      timestamp: Date.now(),
+    })
+    console.log("Offline: record sync queued for later")
+    return
+  }
+
   try {
-    await supabase.from("hamali_records").upsert({
+    const { error } = await supabase.from("hamali_records").upsert({
       id: record.id,
       date: record.date,
       categories: record.categories,
       grand_total: record.grandTotal,
       created_at: record.createdAt,
     })
+    if (error) throw error
   } catch (e) {
-    console.warn("Supabase record sync failed:", e)
+    console.warn("Supabase record sync failed, queuing for retry:", e)
+    addPendingOp({
+      type: "upsert-record",
+      payload: { id: record.id, date: record.date, categories: record.categories, grandTotal: record.grandTotal, createdAt: record.createdAt },
+      timestamp: Date.now(),
+    })
   }
 }
 
 async function deleteRecordFromSupabase(recordId: string) {
-  try {
-    await supabase.from("hamali_records").delete().eq("id", recordId)
-  } catch (e) {
-    console.warn("Supabase record delete failed:", e)
+  // If offline, queue and return
+  if (!isOnline()) {
+    addPendingOp({ type: "delete-record", payload: { id: recordId }, timestamp: Date.now() })
+    console.log("Offline: record delete queued for later")
+    return
   }
+
+  try {
+    const { error } = await supabase.from("hamali_records").delete().eq("id", recordId)
+    if (error) throw error
+  } catch (e) {
+    console.warn("Supabase record delete failed, queuing for retry:", e)
+    addPendingOp({ type: "delete-record", payload: { id: recordId }, timestamp: Date.now() })
+  }
+}
+
+// ─── Flush Pending Sync Queue ───
+
+let isFlushing = false
+
+export async function flushPendingSync(): Promise<number> {
+  if (isFlushing) return 0
+  if (!isOnline()) return 0
+
+  isFlushing = true
+  const ops = getPendingOps()
+  if (ops.length === 0) {
+    isFlushing = false
+    return 0
+  }
+
+  console.log(`Flushing ${ops.length} pending sync operations...`)
+  const failedOps: PendingSyncOp[] = []
+  let synced = 0
+
+  for (const op of ops) {
+    try {
+      switch (op.type) {
+        case "sync-categories": {
+          await supabase.from("hamali_categories").delete().neq("id", "")
+          const categories = op.payload as Category[]
+          if (categories.length > 0) {
+            const { error } = await supabase.from("hamali_categories").insert(
+              categories.map((c) => ({
+                id: c.id,
+                name: c.name,
+                charge_per_bag: c.chargePerBag,
+                is_default: c.isDefault,
+              }))
+            )
+            if (error) throw error
+          }
+          synced++
+          break
+        }
+        case "upsert-record": {
+          const r = op.payload
+          const { error } = await supabase.from("hamali_records").upsert({
+            id: r.id,
+            date: r.date,
+            categories: r.categories,
+            grand_total: r.grandTotal,
+            created_at: r.createdAt,
+          })
+          if (error) throw error
+          synced++
+          break
+        }
+        case "delete-record": {
+          const { error } = await supabase.from("hamali_records").delete().eq("id", op.payload.id)
+          if (error) throw error
+          synced++
+          break
+        }
+      }
+    } catch (e) {
+      console.warn(`Failed to flush op ${op.type}:`, e)
+      failedOps.push(op)
+    }
+  }
+
+  savePendingOps(failedOps)
+  isFlushing = false
+  console.log(`Flushed ${synced} ops, ${failedOps.length} still pending`)
+  return synced
+}
+
+// ─── Online Event Listener (auto-flush when connection restored) ───
+
+let listenerRegistered = false
+
+export function registerOnlineListener(): void {
+  if (typeof window === "undefined" || listenerRegistered) return
+  listenerRegistered = true
+
+  window.addEventListener("online", () => {
+    console.log("Device back online — flushing pending sync...")
+    flushPendingSync()
+  })
 }
 
 // ─── Pull from Supabase (called on app load) ───
@@ -119,6 +290,9 @@ export async function syncFromSupabase(): Promise<{
   categories: Category[] | null
   records: DailyRecord[] | null
 }> {
+  // First, flush any pending offline operations BEFORE pulling
+  await flushPendingSync()
+
   try {
     const [catRes, recRes] = await Promise.all([
       supabase.from("hamali_categories").select("*").order("created_at"),
