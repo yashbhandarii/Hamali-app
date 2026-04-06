@@ -278,9 +278,12 @@ export function registerOnlineListener(): void {
   if (typeof window === "undefined" || listenerRegistered) return
   listenerRegistered = true
 
-  window.addEventListener("online", () => {
-    console.log("Device back online — flushing pending sync...")
-    flushPendingSync()
+  window.addEventListener("online", async () => {
+    console.log("Device back online — flushing pending sync and merging data...")
+    // First flush all pending offline ops to Supabase
+    await flushPendingSync()
+    // Then do a full merge so local + remote stay in sync
+    await syncFromSupabase()
   })
 }
 
@@ -292,6 +295,12 @@ export async function syncFromSupabase(): Promise<{
 }> {
   // First, flush any pending offline operations BEFORE pulling
   await flushPendingSync()
+
+  // Check if there are still pending ops that failed to flush
+  const remainingOps = getPendingOps()
+  const hasPendingRecordOps = remainingOps.some(
+    (op) => op.type === "upsert-record" || op.type === "delete-record"
+  )
 
   try {
     const [catRes, recRes] = await Promise.all([
@@ -311,16 +320,72 @@ export async function syncFromSupabase(): Promise<{
     }
 
     let records: DailyRecord[] | null = null
-    if (recRes.data && recRes.data.length > 0) {
-      records = recRes.data.map((r: any) => ({
-        id: r.id,
-        date: r.date,
-        categories: r.categories,
-        grandTotal: Number(r.grand_total),
-        createdAt: r.created_at,
-      }))
-      localStorage.setItem(RECORDS_KEY, JSON.stringify(records))
+    const remoteRecords: DailyRecord[] = (recRes.data || []).map((r: any) => ({
+      id: r.id,
+      date: r.date,
+      categories: r.categories,
+      grandTotal: Number(r.grand_total),
+      createdAt: r.created_at,
+    }))
+
+    // Get current local records
+    const localRecords = getRecords()
+
+    // Collect IDs of records that have a pending delete op (not yet flushed)
+    const pendingDeleteIds = new Set(
+      remainingOps
+        .filter((op) => op.type === "delete-record")
+        .map((op) => op.payload?.id)
+    )
+
+    // Collect IDs of records that have a pending upsert op (not yet flushed)
+    const pendingUpsertIds = new Set(
+      remainingOps
+        .filter((op) => op.type === "upsert-record")
+        .map((op) => op.payload?.id)
+    )
+
+    // Build a map of remote records by ID
+    const remoteById = new Map<string, DailyRecord>()
+    for (const r of remoteRecords) {
+      remoteById.set(r.id, r)
     }
+
+    // Merge strategy:
+    // 1. Start with all remote records (except those pending local delete)
+    // 2. Add any local-only records not in remote (these are offline-saved, not yet synced)
+    // 3. For records pending upsert, prefer the local version (it's newer)
+    const mergedById = new Map<string, DailyRecord>()
+
+    // Add remote records (skip those pending local delete)
+    for (const r of remoteRecords) {
+      if (!pendingDeleteIds.has(r.id)) {
+        mergedById.set(r.id, r)
+      }
+    }
+
+    // Add/override with local records that aren't in remote yet OR have pending upserts
+    for (const l of localRecords) {
+      if (pendingDeleteIds.has(l.id)) {
+        // This record is pending deletion, don't include it
+        continue
+      }
+      if (!remoteById.has(l.id)) {
+        // Local-only record (offline saved, not yet synced) — KEEP it
+        mergedById.set(l.id, l)
+      } else if (pendingUpsertIds.has(l.id)) {
+        // Has a pending upsert that failed — prefer local version
+        mergedById.set(l.id, l)
+      }
+      // Otherwise remote version wins (it's the latest synced version)
+    }
+
+    // Sort by createdAt descending (newest first)
+    records = Array.from(mergedById.values()).sort(
+      (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
+    )
+
+    localStorage.setItem(RECORDS_KEY, JSON.stringify(records))
 
     return { categories, records }
   } catch (e) {
