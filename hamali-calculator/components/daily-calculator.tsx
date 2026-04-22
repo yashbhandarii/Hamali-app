@@ -6,8 +6,8 @@ import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
-import { Save, FileDown, Plus, Trash2 } from "lucide-react"
-import type { Category, DailyRecord, CalculationEntry } from "@/types/labor"
+import { Save, FileDown, Plus, Trash2, Minus } from "lucide-react"
+import type { Category, DailyRecord, CalculationEntry, Expense } from "@/types/labor"
 import { saveRecord } from "@/lib/storage"
 import { generatePDF } from "@/lib/pdf-generator"
 import { useToast } from "@/hooks/use-toast"
@@ -18,6 +18,9 @@ interface DailyCalculatorProps {
 
 export function DailyCalculator({ categories }: DailyCalculatorProps) {
   const [entries, setEntries] = useState<CalculationEntry[]>([])
+  const [expenses, setExpenses] = useState<Expense[]>([
+    { id: `exp-${Date.now()}`, amount: 0, comment: "" },
+  ])
   const { toast } = useToast()
   const formRef = useRef<HTMLDivElement>(null)
 
@@ -75,9 +78,17 @@ export function DailyCalculator({ categories }: DailyCalculatorProps) {
       .filter(Boolean)
   }, [entries, categories])
 
-  const grandTotal = useMemo(() => {
+  const totalCharges = useMemo(() => {
     return calculations.reduce((sum, calc) => sum + (calc?.totalCharge || 0), 0)
   }, [calculations])
+
+  const totalExpenses = useMemo(() => {
+    return expenses.reduce((sum, exp) => sum + (exp.amount || 0), 0)
+  }, [expenses])
+
+  const grandTotal = useMemo(() => {
+    return totalCharges - totalExpenses
+  }, [totalCharges, totalExpenses])
 
   const handleBagsChange = (entryId: string, bags: number) => {
     setEntries((prev) =>
@@ -114,8 +125,36 @@ export function DailyCalculator({ categories }: DailyCalculatorProps) {
     setEntries((prev) => prev.filter((e) => e.entryId !== entryId))
   }
 
+  // ─── Expense Handlers ───
+
+  const handleAddExpense = () => {
+    setExpenses((prev) => [
+      ...prev,
+      { id: `exp-${Date.now()}`, amount: 0, comment: "" },
+    ])
+  }
+
+  const handleRemoveExpense = (expenseId: string) => {
+    if (expenses.length <= 1) return
+    setExpenses((prev) => prev.filter((e) => e.id !== expenseId))
+  }
+
+  const handleExpenseAmountChange = (expenseId: string, amount: number) => {
+    setExpenses((prev) =>
+      prev.map((e) =>
+        e.id === expenseId ? { ...e, amount: Math.max(0, amount) } : e
+      )
+    )
+  }
+
+  const handleExpenseCommentChange = (expenseId: string, comment: string) => {
+    setExpenses((prev) =>
+      prev.map((e) => (e.id === expenseId ? { ...e, comment } : e))
+    )
+  }
+
   const handleSaveRecord = () => {
-    if (grandTotal === 0) {
+    if (totalCharges === 0) {
       toast({
         title: "No data to save",
         description: "Please enter bag quantities before saving.",
@@ -123,6 +162,8 @@ export function DailyCalculator({ categories }: DailyCalculatorProps) {
       })
       return
     }
+
+    const activeExpenses = expenses.filter((e) => e.amount > 0)
 
     const record: DailyRecord = {
       id: Date.now().toString(),
@@ -137,6 +178,7 @@ export function DailyCalculator({ categories }: DailyCalculatorProps) {
           totalCharge: calc!.totalCharge,
           comment: calc!.comment || undefined,
         })),
+      expenses: activeExpenses.length > 0 ? activeExpenses : undefined,
       grandTotal,
       createdAt: new Date().toISOString(),
     }
@@ -152,6 +194,8 @@ export function DailyCalculator({ categories }: DailyCalculatorProps) {
         comment: "",
       }))
     )
+    // Reset expenses
+    setExpenses([{ id: `exp-${Date.now()}`, amount: 0, comment: "" }])
 
     toast({
       title: "Record saved successfully",
@@ -160,7 +204,7 @@ export function DailyCalculator({ categories }: DailyCalculatorProps) {
   }
 
   const handleGeneratePDF = async () => {
-    if (grandTotal === 0) {
+    if (totalCharges === 0) {
       toast({
         title: "No data to export",
         description: "Please enter bag quantities before generating PDF.",
@@ -170,6 +214,8 @@ export function DailyCalculator({ categories }: DailyCalculatorProps) {
     }
 
     try {
+      const activeExpenses = expenses.filter((e) => e.amount > 0)
+
       const record: DailyRecord = {
         id: Date.now().toString(),
         date: new Date().toLocaleDateString(),
@@ -183,6 +229,7 @@ export function DailyCalculator({ categories }: DailyCalculatorProps) {
             totalCharge: calc!.totalCharge,
             comment: calc!.comment || undefined,
           })),
+        expenses: activeExpenses.length > 0 ? activeExpenses : undefined,
         grandTotal,
         createdAt: new Date().toISOString(),
       }
@@ -284,6 +331,80 @@ export function DailyCalculator({ categories }: DailyCalculatorProps) {
                 </div>
               )
             })}
+
+            {/* ─── Expense Section ─── */}
+            <div className="mt-4 pt-4 border-t-2 border-destructive/30">
+              <div className="flex items-center justify-between mb-3">
+                <Label className="text-sm font-bold text-destructive flex items-center gap-1">
+                  <Minus className="h-4 w-4" />
+                  EXPENSES (Deductions)
+                </Label>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={handleAddExpense}
+                  className="border-destructive text-destructive hover:bg-destructive hover:text-destructive-foreground h-8 px-2 text-xs"
+                  title="Add another expense"
+                >
+                  <Plus className="h-3 w-3 mr-1" />
+                  Add Expense
+                </Button>
+              </div>
+              <div className="space-y-2">
+                {expenses.map((expense, idx) => (
+                  <div
+                    key={expense.id}
+                    className="flex items-center gap-2 p-2 border border-destructive/20 rounded-lg bg-destructive/5"
+                  >
+                    <span className="text-xs text-destructive font-medium w-5 text-center flex-shrink-0">
+                      {idx + 1}.
+                    </span>
+                    <Input
+                      type="number"
+                      min="0"
+                      value={expense.amount === 0 ? "" : expense.amount}
+                      onChange={(e) =>
+                        handleExpenseAmountChange(
+                          expense.id,
+                          Number.parseFloat(e.target.value) || 0
+                        )
+                      }
+                      onKeyDown={handleKeyDown}
+                      data-field-index="true"
+                      className="border-destructive/50 w-24 sm:w-28 text-sm"
+                      placeholder="₹ Amount"
+                    />
+                    <Input
+                      type="text"
+                      value={expense.comment}
+                      onChange={(e) =>
+                        handleExpenseCommentChange(expense.id, e.target.value)
+                      }
+                      onKeyDown={handleKeyDown}
+                      data-field-index="true"
+                      className="border-destructive/30 flex-1 text-xs"
+                      placeholder="Expense description..."
+                    />
+                    {expenses.length > 1 && (
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={() => handleRemoveExpense(expense.id)}
+                        className="border-destructive text-destructive hover:bg-destructive hover:text-destructive-foreground flex-shrink-0 p-1 h-8 w-8"
+                        title="Remove this expense"
+                      >
+                        <Trash2 className="h-3 w-3" />
+                      </Button>
+                    )}
+                  </div>
+                ))}
+              </div>
+              {totalExpenses > 0 && (
+                <div className="mt-2 text-right text-sm font-medium text-destructive">
+                  Total Expenses: −₹{totalExpenses.toFixed(2)}
+                </div>
+              )}
+            </div>
           </div>
         </CardContent>
       </Card>
@@ -332,6 +453,32 @@ export function DailyCalculator({ categories }: DailyCalculatorProps) {
                       </TableRow>
                     )
                   })}
+                  {totalExpenses > 0 && (
+                    <>
+                      <TableRow className="bg-primary/5 border-t border-primary/30">
+                        <TableCell colSpan={3} className="font-medium text-primary text-right text-xs sm:text-sm">
+                          Subtotal:
+                        </TableCell>
+                        <TableCell className="font-medium text-center text-xs sm:text-sm text-primary">
+                          ₹{totalCharges.toFixed(2)}
+                        </TableCell>
+                        <TableCell />
+                      </TableRow>
+                      {expenses
+                        .filter((e) => e.amount > 0)
+                        .map((expense) => (
+                          <TableRow key={expense.id} className="bg-destructive/5">
+                            <TableCell colSpan={3} className="font-medium text-destructive text-right text-xs sm:text-sm">
+                              − Expense: {expense.comment || "(no description)"}
+                            </TableCell>
+                            <TableCell className="font-medium text-center text-xs sm:text-sm text-destructive">
+                              −₹{expense.amount.toFixed(2)}
+                            </TableCell>
+                            <TableCell />
+                          </TableRow>
+                        ))}
+                    </>
+                  )}
                   {calculations.some((calc) => calc && calc.bags > 0) && (
                     <TableRow className="bg-accent/10 border-t-2 border-primary">
                       <TableCell colSpan={3} className="font-bold text-primary text-right text-xs sm:text-sm">

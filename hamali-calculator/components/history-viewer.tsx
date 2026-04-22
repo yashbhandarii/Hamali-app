@@ -7,8 +7,8 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import { Badge } from "@/components/ui/badge"
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible"
-import { FileDown, Trash2, ChevronDown, ChevronRight, Calendar, Pencil, Check, X } from "lucide-react"
-import type { DailyRecord, Category } from "@/types/labor"
+import { FileDown, Trash2, ChevronDown, ChevronRight, Calendar, Pencil, Check, X, Plus } from "lucide-react"
+import type { DailyRecord, Category, Expense } from "@/types/labor"
 import { getRecords, deleteRecord, updateRecord, getCategories } from "@/lib/storage"
 import { generatePDF } from "@/lib/pdf-generator"
 import { useToast } from "@/hooks/use-toast"
@@ -18,6 +18,7 @@ export function HistoryViewer() {
   const [expandedRecords, setExpandedRecords] = useState<Set<string>>(new Set())
   const [editingRecordId, setEditingRecordId] = useState<string | null>(null)
   const [editData, setEditData] = useState<DailyRecord["categories"]>([])
+  const [editExpenses, setEditExpenses] = useState<Expense[]>([])
   const [availableCategories, setAvailableCategories] = useState<Category[]>([])
   const { toast } = useToast()
 
@@ -69,6 +70,10 @@ export function HistoryViewer() {
   const startEditing = (record: DailyRecord) => {
     setEditingRecordId(record.id)
     setEditData(record.categories.map((c) => ({ ...c })))
+    setEditExpenses((record.expenses || []).length > 0
+      ? (record.expenses || []).map((e) => ({ ...e }))
+      : [{ id: `exp-${Date.now()}`, amount: 0, comment: "" }]
+    )
     // Make sure it's expanded
     const newExpanded = new Set(expandedRecords)
     newExpanded.add(record.id)
@@ -78,6 +83,7 @@ export function HistoryViewer() {
   const cancelEditing = () => {
     setEditingRecordId(null)
     setEditData([])
+    setEditExpenses([])
   }
 
   const handleEditBags = (index: number, bags: number) => {
@@ -105,10 +111,15 @@ export function HistoryViewer() {
     const record = records.find((r) => r.id === editingRecordId)
     if (!record) return
 
-    const newGrandTotal = editData.reduce((sum, c) => sum + c.totalCharge, 0)
+    const categoriesTotal = editData.reduce((sum, c) => sum + c.bags * c.chargePerBag, 0)
+    const activeExpenses = editExpenses.filter((e) => e.amount > 0)
+    const expensesTotal = activeExpenses.reduce((sum, e) => sum + e.amount, 0)
+    const newGrandTotal = categoriesTotal - expensesTotal
+
     const updatedRecord: DailyRecord = {
       ...record,
-      categories: editData.filter(c => c.bags > 0), // Remove entries with 0 bags
+      categories: editData.filter(c => c.bags > 0),
+      expenses: activeExpenses.length > 0 ? activeExpenses : undefined,
       grandTotal: newGrandTotal,
     }
 
@@ -116,11 +127,40 @@ export function HistoryViewer() {
     loadRecords()
     setEditingRecordId(null)
     setEditData([])
+    setEditExpenses([])
 
     toast({
       title: "Record updated",
       description: `Record updated with new total ₹${newGrandTotal.toFixed(2)}`,
     })
+  }
+
+  // ─── Expense Editing Handlers ───
+
+  const handleEditAddExpense = () => {
+    setEditExpenses((prev) => [
+      ...prev,
+      { id: `exp-${Date.now()}`, amount: 0, comment: "" },
+    ])
+  }
+
+  const handleEditRemoveExpense = (expenseId: string) => {
+    if (editExpenses.length <= 1) return
+    setEditExpenses((prev) => prev.filter((e) => e.id !== expenseId))
+  }
+
+  const handleEditExpenseAmount = (expenseId: string, amount: number) => {
+    setEditExpenses((prev) =>
+      prev.map((e) =>
+        e.id === expenseId ? { ...e, amount: Math.max(0, amount) } : e
+      )
+    )
+  }
+
+  const handleEditExpenseComment = (expenseId: string, comment: string) => {
+    setEditExpenses((prev) =>
+      prev.map((e) => (e.id === expenseId ? { ...e, comment } : e))
+    )
   }
 
   const formatDateTime = (isoString: string) => {
@@ -341,16 +381,98 @@ export function HistoryViewer() {
                             )}
                             <TableRow className="bg-accent/10 border-t-2 border-primary">
                               <TableCell colSpan={3} className="font-bold text-primary text-right text-xs sm:text-sm">
-                                GRAND TOTAL:
+                                {(() => {
+                                  const expensesList = isEditing ? editExpenses : (record.expenses || [])
+                                  const hasExpenses = expensesList.some((e) => e.amount > 0)
+                                  return hasExpenses ? "Subtotal:" : "GRAND TOTAL:"
+                                })()}
                               </TableCell>
                               <TableCell className="font-bold text-center text-sm sm:text-lg text-primary">
                                 ₹{(isEditing
                                   ? editData.reduce((sum, c) => sum + c.bags * c.chargePerBag, 0)
-                                  : record.grandTotal
+                                  : record.categories.reduce((sum, c) => sum + c.totalCharge, 0)
                                 ).toFixed(2)}
                               </TableCell>
                               <TableCell />
                             </TableRow>
+                            {/* Expense rows */}
+                            {(() => {
+                              const expensesList = isEditing ? editExpenses : (record.expenses || [])
+                              const activeExpenses = expensesList.filter((e) => e.amount > 0)
+                              if (activeExpenses.length === 0) return null
+                              return (
+                                <>
+                                  {activeExpenses.map((expense) => (
+                                    <TableRow key={expense.id} className="bg-destructive/5">
+                                      <TableCell colSpan={3} className="font-medium text-destructive text-right text-xs sm:text-sm">
+                                        − {expense.comment || "Expense"}
+                                        {isEditing && (
+                                          <span className="ml-2 inline-flex gap-1">
+                                            <Input
+                                              type="number"
+                                              min="0"
+                                              value={expense.amount === 0 ? "" : expense.amount}
+                                              onChange={(e) => handleEditExpenseAmount(expense.id, Number.parseFloat(e.target.value) || 0)}
+                                              className="w-20 text-xs border-destructive/50 inline-block"
+                                              placeholder="₹"
+                                            />
+                                            <Input
+                                              type="text"
+                                              value={expense.comment}
+                                              onChange={(e) => handleEditExpenseComment(expense.id, e.target.value)}
+                                              className="w-24 text-xs border-destructive/30"
+                                              placeholder="Desc..."
+                                            />
+                                            {editExpenses.length > 1 && (
+                                              <Button
+                                                variant="outline"
+                                                size="sm"
+                                                onClick={() => handleEditRemoveExpense(expense.id)}
+                                                className="border-destructive text-destructive p-1 h-7 w-7"
+                                              >
+                                                <Trash2 className="h-3 w-3" />
+                                              </Button>
+                                            )}
+                                          </span>
+                                        )}
+                                      </TableCell>
+                                      <TableCell className="font-medium text-center text-xs sm:text-sm text-destructive">
+                                        −₹{expense.amount.toFixed(2)}
+                                      </TableCell>
+                                      <TableCell />
+                                    </TableRow>
+                                  ))}
+                                  {isEditing && (
+                                    <TableRow>
+                                      <TableCell colSpan={5} className="text-center py-1">
+                                        <Button
+                                          variant="outline"
+                                          size="sm"
+                                          onClick={handleEditAddExpense}
+                                          className="border-destructive text-destructive hover:bg-destructive hover:text-destructive-foreground h-7 px-2 text-xs"
+                                        >
+                                          <Plus className="h-3 w-3 mr-1" />
+                                          Add Expense
+                                        </Button>
+                                      </TableCell>
+                                    </TableRow>
+                                  )}
+                                  <TableRow className="bg-accent/10 border-t-2 border-primary">
+                                    <TableCell colSpan={3} className="font-bold text-primary text-right text-xs sm:text-sm">
+                                      GRAND TOTAL:
+                                    </TableCell>
+                                    <TableCell className="font-bold text-center text-sm sm:text-lg text-primary">
+                                      ₹{(isEditing
+                                        ? editData.reduce((sum, c) => sum + c.bags * c.chargePerBag, 0) -
+                                          editExpenses.filter((e) => e.amount > 0).reduce((sum, e) => sum + e.amount, 0)
+                                        : record.grandTotal
+                                      ).toFixed(2)}
+                                    </TableCell>
+                                    <TableCell />
+                                  </TableRow>
+                                </>
+                              )
+                            })()}
                           </TableBody>
                         </Table>
                       </div>

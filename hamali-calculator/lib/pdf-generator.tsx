@@ -95,6 +95,16 @@ export const generatePDF = async (record: DailyRecord): Promise<void> => {
           color: #1e293b;
           font-size: 16px;
         }
+        .expense-row {
+          background-color: #fef2f2 !important;
+        }
+        .expense-row td {
+          color: #dc2626;
+        }
+        .subtotal-row {
+          background-color: #f1f5f9 !important;
+          border-top: 1px solid #94a3b8;
+        }
         .footer {
           margin-top: 40px;
           text-align: center;
@@ -158,11 +168,40 @@ export const generatePDF = async (record: DailyRecord): Promise<void> => {
           `,
             )
             .join("")}
-          <tr class="total-row">
-            <td colspan="3" class="right">GRAND TOTAL:</td>
-            <td class="right">₹${record.grandTotal.toFixed(2)}</td>
-            <td></td>
-          </tr>
+          ${(() => {
+            const expenses = record.expenses || []
+            const activeExpenses = expenses.filter((e: any) => e.amount > 0)
+            if (activeExpenses.length === 0) {
+              return `
+                <tr class="total-row">
+                  <td colspan="3" class="right">GRAND TOTAL:</td>
+                  <td class="right">₹${record.grandTotal.toFixed(2)}</td>
+                  <td></td>
+                </tr>
+              `
+            }
+            const subtotal = record.categories.reduce((sum: number, cat: any) => sum + cat.totalCharge, 0)
+            const expenseRows = activeExpenses.map((e: any) => `
+              <tr class="expense-row">
+                <td colspan="3" class="right">− ${e.comment || "Expense"}:</td>
+                <td class="right">−₹${e.amount.toFixed(2)}</td>
+                <td></td>
+              </tr>
+            `).join("")
+            return `
+              <tr class="subtotal-row">
+                <td colspan="3" class="right">Subtotal:</td>
+                <td class="right">₹${subtotal.toFixed(2)}</td>
+                <td></td>
+              </tr>
+              ${expenseRows}
+              <tr class="total-row">
+                <td colspan="3" class="right">GRAND TOTAL:</td>
+                <td class="right">₹${record.grandTotal.toFixed(2)}</td>
+                <td></td>
+              </tr>
+            `
+          })()}
         </tbody>
       </table>
 

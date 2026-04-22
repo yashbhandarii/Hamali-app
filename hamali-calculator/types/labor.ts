@@ -5,6 +5,12 @@ export interface Category {
   isDefault: boolean
 }
 
+export interface Expense {
+  id: string
+  amount: number
+  comment: string
+}
+
 export interface DailyRecord {
   id: string
   date: string
@@ -16,6 +22,7 @@ export interface DailyRecord {
     totalCharge: number
     comment?: string
   }[]
+  expenses?: Expense[]
   grandTotal: number
   createdAt: string
 }

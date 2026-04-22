@@ -156,7 +156,7 @@ async function syncRecordToSupabase(record: DailyRecord) {
   if (!isOnline()) {
     addPendingOp({
       type: "upsert-record",
-      payload: { id: record.id, date: record.date, categories: record.categories, grandTotal: record.grandTotal, createdAt: record.createdAt },
+      payload: { id: record.id, date: record.date, categories: record.categories, expenses: record.expenses, grandTotal: record.grandTotal, createdAt: record.createdAt },
       timestamp: Date.now(),
     })
     console.log("Offline: record sync queued for later")
@@ -168,6 +168,7 @@ async function syncRecordToSupabase(record: DailyRecord) {
       id: record.id,
       date: record.date,
       categories: record.categories,
+      expenses: record.expenses || null,
       grand_total: record.grandTotal,
       created_at: record.createdAt,
     })
@@ -176,7 +177,7 @@ async function syncRecordToSupabase(record: DailyRecord) {
     console.warn("Supabase record sync failed, queuing for retry:", e)
     addPendingOp({
       type: "upsert-record",
-      payload: { id: record.id, date: record.date, categories: record.categories, grandTotal: record.grandTotal, createdAt: record.createdAt },
+      payload: { id: record.id, date: record.date, categories: record.categories, expenses: record.expenses, grandTotal: record.grandTotal, createdAt: record.createdAt },
       timestamp: Date.now(),
     })
   }
@@ -244,6 +245,7 @@ export async function flushPendingSync(): Promise<number> {
             id: r.id,
             date: r.date,
             categories: r.categories,
+            expenses: r.expenses || null,
             grand_total: r.grandTotal,
             created_at: r.createdAt,
           })
@@ -298,9 +300,6 @@ export async function syncFromSupabase(): Promise<{
 
   // Check if there are still pending ops that failed to flush
   const remainingOps = getPendingOps()
-  const hasPendingRecordOps = remainingOps.some(
-    (op) => op.type === "upsert-record" || op.type === "delete-record"
-  )
 
   try {
     const [catRes, recRes] = await Promise.all([
@@ -324,6 +323,7 @@ export async function syncFromSupabase(): Promise<{
       id: r.id,
       date: r.date,
       categories: r.categories,
+      expenses: r.expenses || undefined,
       grandTotal: Number(r.grand_total),
       createdAt: r.created_at,
     }))
